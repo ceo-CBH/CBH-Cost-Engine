@@ -1,0 +1,168 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #080808;
+  --bg2: #111111;
+  --bg3: #1A1A1A;
+  --bg4: #222222;
+  --border: rgba(255,255,255,0.08);
+  --border2: rgba(255,255,255,0.14);
+  --text: #F5F5F7;
+  --text2: #86868B;
+  --text3: #48484A;
+  --accent: #0A84FF;
+  --accent2: #30D158;
+  --amber: #FF9F0A;
+  --red: #FF453A;
+  --glow: rgba(10,132,255,0.15);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: var(--font-dm-sans), -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-display { font-family: var(--font-syne), sans-serif; }
+.font-mono    { font-family: var(--font-dm-mono), monospace; }
+
+/* scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+/* glass card */
+.card {
+  background: rgba(255,255,255,0.04);
+  border: 0.5px solid var(--border);
+  border-radius: 14px;
+}
+.card:hover { border-color: var(--border2); }
+
+/* inputs */
+.input {
+  background: #1A1A1A;
+  border: 0.5px solid var(--border2);
+  border-radius: 10px;
+  padding: 9px 12px;
+  color: var(--text);
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: 13px;
+  outline: none;
+  width: 100%;
+  transition: border-color .15s, box-shadow .15s;
+}
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(10,132,255,.15);
+}
+.input.computed {
+  color: var(--accent);
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 12px;
+  border-color: rgba(10,132,255,.2);
+  background: rgba(10,132,255,.06);
+  cursor: default;
+}
+
+/* select arrow */
+select.input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2386868B'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+}
+
+/* buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 18px;
+  border-radius: 10px;
+  font-family: var(--font-dm-sans), sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: all .15s;
+}
+.btn-primary {
+  background: var(--accent);
+  color: white;
+  box-shadow: 0 4px 20px rgba(10,132,255,.3);
+}
+.btn-primary:hover { background: #0077FF; transform: translateY(-1px); }
+.btn-ghost {
+  background: rgba(255,255,255,.07);
+  color: var(--text);
+  border: 0.5px solid var(--border2);
+}
+.btn-ghost:hover { background: rgba(255,255,255,.1); }
+.btn-sm { padding: 6px 13px; font-size: 12px; }
+.btn-success { background: rgba(48,209,88,.12); color: var(--accent2); border: 0.5px solid rgba(48,209,88,.25); }
+
+/* badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.badge-blue   { background: rgba(10,132,255,.15); color: var(--accent); }
+.badge-green  { background: rgba(48,209,88,.12);  color: var(--accent2); }
+.badge-amber  { background: rgba(255,159,10,.12); color: var(--amber); }
+.badge-red    { background: rgba(255,69,58,.12);  color: var(--red); }
+.badge-grey   { background: rgba(255,255,255,.08); color: var(--text2); }
+
+/* step indicator */
+.step-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--border2);
+  transition: all .2s;
+}
+.step-dot.active { background: var(--accent); box-shadow: 0 0 8px var(--glow); }
+.step-dot.done   { background: var(--accent2); }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fadeUp .25s ease both; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin .8s linear infinite; }
+
+@keyframes pulse { 0%,100%{opacity:.6} 50%{opacity:1} }
+.pulse { animation: pulse 1.5s ease infinite; }
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
