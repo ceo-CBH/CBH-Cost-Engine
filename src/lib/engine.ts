@@ -65,7 +65,7 @@ export function flatSize(style: BoxStyle, L: number, W: number, H: number) {
     case 'tuck':      return { fL: 2*L+0.55,         fW: 2*H+W+1.825 }
     case 'mailer':    return { fL: L+2*H+0.177,       fW: 2*(L+W)+0.725 }
     case 'sleeve':    return { fL: W+2*H+0.75,        fW: L+0.25 }
-    case '2pc':       { const Hl=Math.max(H*.15,.375); return { fL: Math.max(L+2*H+.5,L+2*Hl+1), fW: Math.max(W+2*H+.5,W+2*Hl+1) } }
+    case '2pc':       return { fL: L+2*H+0.5,          fW: W+2*H+0.5 }
     case '4corner':   return { fL: L+2*H+0.125,       fW: 2*(W+H)+2.125 }
     case 'rigid-mag': return { fL: L+2*H+0.75,        fW: W+H+0.5 }
     case 'rigid-book':return { fL: L+2*H+0.5,         fW: W+H+0.375 }
@@ -199,6 +199,7 @@ export function calcTier(input: CalcInput): CalcTier {
   const flute    = input.flute    || 'B'
   const isR = style.startsWith('rigid')
   const isC = style.startsWith('corr')
+  const sidesMult = sides === 'both' ? 2 : 1
 
   const flat    = flatSize(style, L, W, H)
   const machine = autoMachine(flat.fL, flat.fW)
@@ -217,7 +218,7 @@ export function calcTier(input: CalcInput): CalcTier {
 
   // ── Material cost ──────────────────────────────────────────────
   if (isC) {
-    const linerCost = flat.fL * flat.fW * rates.corr_liner * qty * (sides==='both' ? 2 : 1)
+    const linerCost = flat.fL * flat.fW * rates.corr_liner * qty * sidesMult
     const boardRate = flute==='E' ? rates.corr_board_e : flute==='B' ? rates.corr_board_b : rates.corr_board_c
     const boardCost = flat.fL * flat.fW * boardRate * qty
     bk['Corrugated liner'] = linerCost
@@ -229,9 +230,9 @@ export function calcTier(input: CalcInput): CalcTier {
       bk['Morocco / Synthetic'] = sqmPerBox * (rates.mor / 1.38) * qty
       matKg = flat.fL * flat.fW * 120 / 15500 / 100 * qty
     } else {
-      const wr   = wrapType==='art' ? rates.art : rates.wrap
-      const wGsm = wrapType==='art' ? 128 : 150
-      bk['Wrap paper'] = sL * sW * wGsm * wr / 15500 / 100 * eff
+      const wr   = rates.wrap
+      const wGsm = 150
+      bk['Wrap paper'] = sL * sW * wGsm * wr / 15500 / 100 * eff * sidesMult
       matKg = flat.fL * flat.fW * wGsm / 15500 / 100 * qty
     }
     // Greyboard
@@ -243,7 +244,7 @@ export function calcTier(input: CalcInput): CalcTier {
   } else {
     const stockRateMap: Record<string,number> = { bleach:rates.bleach, art:rates.art, alb:rates.alb, krf:rates.krf }
     const rate = stockRateMap[stockKey] ?? rates.bleach
-    bk['Paper stock'] = sL * sW * gsm * rate / 15500 / 100 * eff
+    bk['Paper stock'] = sL * sW * gsm * rate / 15500 / 100 * eff * sidesMult
     matKg = flat.fL * flat.fW * gsm / 15500 / 100 * qty
   }
 
@@ -253,8 +254,8 @@ export function calcTier(input: CalcInput): CalcTier {
   if (pSpec !== 'none') {
     const plates = pSpec==='4c'?4 : pSpec==='2c'?2 : 1
     const run    = pSpec==='4c'?mr.c4 : pSpec==='2c'?mr.c2 : pSpec==='pms'?mr.pms : mr.gnd
-    bk['Plates'] = mr.plate * plates
-    bk['Printing'] = run
+    bk['Plates'] = mr.plate * plates * sidesMult
+    bk['Printing'] = run * sidesMult
   }
 
   // ── Lamination ─────────────────────────────────────────────────
@@ -264,7 +265,6 @@ export function calcTier(input: CalcInput): CalcTier {
     const lamRate = isC ? rates.lam_corr :
       lam==='gloss' ? rates.lam_gloss :
       lam==='matte' ? rates.lam_matte : rates.lam_soft
-    const sidesMult = sides==='both' ? 2 : 1
     bk['Lamination'] = sL * sW / 144 * lamRate * eff * sidesMult
   }
 
