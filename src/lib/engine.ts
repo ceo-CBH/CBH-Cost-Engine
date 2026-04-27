@@ -2,6 +2,19 @@
 // CBH PRICING ENGINE v6 — All formulas verified against 40+ real jobs
 // ═══════════════════════════════════════════════════════════════════
 
+import {
+  calculateDieCutting,
+  calculateDieMaking,
+  calculateFoiling,
+  calculateGreyboard,
+  calculatePasting,
+  calculateRigidBoxMaking,
+  calculateSellingPrice,
+  calculateTwoPieceFlatSizes,
+  calculateUVCoating,
+} from './pricing'
+import { calculateShipping, type ShippingDestination, type ShippingResult } from './shipping/calculator'
+
 export type BoxStyle =
   | 'tuck' | 'mailer' | 'sleeve' | '2pc' | '4corner'
   | 'rigid-mag' | 'rigid-book'
@@ -15,6 +28,7 @@ export type DieOption = 'none' | 'new' | 'existing'
 export type PasteOption = 'none' | 'auto' | 'hand'
 export type StockKey = 'bleach' | 'art' | 'alb' | 'krf'
 export type WrapType = 'std' | 'mor' | 'art'
+type FlatSize = { fL: number; fW: number }
 
 // Standard cut sheet sizes — from Sheet Sizes & Machines.txt
 export const ALL_SHEETS: [number, number, string][] = [
@@ -75,6 +89,12 @@ export function flatSize(style: BoxStyle, L: number, W: number, H: number) {
   }
 }
 
+function flatArea(style: BoxStyle, L: number, W: number, H: number): number {
+  if (style === '2pc') return calculateTwoPieceFlatSizes(L, W, H).totalAreaSqIn
+  const flat = flatSize(style, L, W, H)
+  return flat.fL * flat.fW
+}
+
 export function bestSheet(oL: number, oW: number): [number, number, string] {
   const fits = ALL_SHEETS.filter(([sL,sW]) =>
     (oL<=sL && oW<=sW) || (oW<=sL && oL<=sW)
@@ -90,6 +110,18 @@ export function autoMachine(fL: number, fW: number) {
     if ((fL<=m.pL&&fW<=m.pW)||(fW<=m.pL&&fL<=m.pW)) return m
   }
   return MACHINES[3]
+}
+
+function productionPlan(flat: FlatSize, qty: number, mult: number) {
+  const machine = autoMachine(flat.fL, flat.fW)
+  const sheet = bestSheet(flat.fL, flat.fW)
+  const [sL, sW] = sheet
+  const ups = Math.max(
+    Math.floor(sL/flat.fL)*Math.floor(sW/flat.fW),
+    Math.floor(sL/flat.fW)*Math.floor(sW/flat.fL), 1
+  )
+  const eff = Math.ceil(Math.ceil(qty/ups)*mult)
+  return { machine, sheet, ups, eff }
 }
 
 // ── QTY MULTIPLIER (derived from 44-job Shipping Ledger) ─────────────
@@ -116,7 +148,7 @@ export function qtyMultiplier(qty: number, mat: 'pb'|'wrap'|'corr'): number {
 export function calcWeight(
   style: BoxStyle, fL: number, fW: number,
   gsm: number, qty: number, flute: FlutType = 'B',
-  gbThick: number = 2, sides: PrintSides = 'outside'
+  gbThick: number = 2
 ): number {
   const isC = style.startsWith('corr')
   const isR = style.startsWith('rigid')
@@ -155,7 +187,9 @@ export interface CalcInput {
   die: DieOption
   paste: PasteOption
   scan: number
-  foilSqIn: number
+  foilSqIn?: number
+  foilEnabled?: boolean
+  uvEnabled?: boolean
   foamOn: boolean
   fL_ins?: number; fW_ins?: number
   ribQty: number; magQty: number
@@ -163,6 +197,10 @@ export interface CalcInput {
   prof: number
   courier: string; zone: string
   bpc: number; cWt: number
+  destination?: ShippingDestination
+  customerZip?: string
+  cartonL?: number; cartonW?: number; cartonH?: number
+  salesMarginPct?: number
   rates: Record<string, number>
 }
 
@@ -175,6 +213,10 @@ export interface CalcTier {
   finalUSD: number
   unitUSD: number
   margin: number
+  salesMarginPct: number
+  salesMarginPKR: number
+  shippingPkr: number
+  shipping: ShippingResult | null
   matKg: number
   shipKg: number
   cartons: number
@@ -187,32 +229,37 @@ export interface CalcTier {
   machine: typeof MACHINES[0]
   sheet: [number, number, string]
   ups: number
+  twoPiece?: ReturnType<typeof calculateTwoPieceFlatSizes>
 }
 
 export function calcTier(input: CalcInput): CalcTier {
   const { L, W, H, style, qty, gsm, pSpec, lam, sides, die, paste,
-          scan, foilSqIn, foamOn, ribQty, magQty, rush, prof,
-          courier, zone, bpc, cWt, rates } = input
+          scan, foamOn, ribQty, magQty, rush,
+          bpc, cWt, rates } = input
   const stockKey = input.stockKey || 'bleach'
   const wrapType = input.wrapType || 'std'
   const gbThick  = input.gbThick  || 2
   const flute    = input.flute    || 'B'
-  const isR = style.startsWith('rigid')
+  const isR = style.startsWith('rigid') || style === '2pc'
   const isC = style.startsWith('corr')
   const sidesMult = sides === 'both' ? 2 : 1
+  const salesMarginPct = input.salesMarginPct ?? input.prof ?? 30
 
-  const flat    = flatSize(style, L, W, H)
-  const machine = autoMachine(flat.fL, flat.fW)
-  const sheet   = bestSheet(flat.fL, flat.fW)
-  const [sL, sW] = sheet
-  const mr      = MACHINE_RATES[machine.id]
-  const ups     = Math.max(
-    Math.floor(sL/flat.fL)*Math.floor(sW/flat.fW),
-    Math.floor(sL/flat.fW)*Math.floor(sW/flat.fL), 1
-  )
+  const twoPiece = style === '2pc' ? calculateTwoPieceFlatSizes(L, W, H) : undefined
+  const flat = twoPiece ? twoPiece.tray : flatSize(style, L, W, H)
   const matType = isC ? 'corr' : isR ? 'wrap' : 'pb'
   const mult    = qtyMultiplier(qty, matType)
-  const eff     = Math.ceil(Math.ceil(qty/ups)*mult)
+  const trayPlan = productionPlan(flat, qty, mult)
+  const lidPlan = twoPiece ? productionPlan(twoPiece.lid, qty, mult) : null
+  const machine = lidPlan && lidPlan.machine.pL*lidPlan.machine.pW > trayPlan.machine.pL*trayPlan.machine.pW
+    ? lidPlan.machine
+    : trayPlan.machine
+  const sheet = trayPlan.sheet
+  const [sL, sW] = sheet
+  const mr = MACHINE_RATES[machine.id]
+  const ups = trayPlan.ups
+  const eff = trayPlan.eff + (lidPlan?.eff || 0)
+  const areaSqIn = flatArea(style, L, W, H)
   const bk: Record<string,number> = {}
   let matKg = 0
 
@@ -226,21 +273,26 @@ export function calcTier(input: CalcInput): CalcTier {
     matKg = calcWeight(style, flat.fL, flat.fW, gsm, qty, flute)
   } else if (isR) {
     if (wrapType === 'mor') {
-      const sqmPerBox = (flat.fL * flat.fW * 6.4516) / 10000
+      const sqmPerBox = (areaSqIn * 6.4516) / 10000
       bk['Morocco / Synthetic'] = sqmPerBox * (rates.mor / 1.38) * qty
-      matKg = flat.fL * flat.fW * 120 / 15500 / 100 * qty
+      matKg = areaSqIn * 120 / 15500 / 100 * qty
     } else {
       const wr   = rates.wrap
       const wGsm = 150
-      bk['Wrap paper'] = sL * sW * wGsm * wr / 15500 / 100 * eff * sidesMult
-      matKg = flat.fL * flat.fW * wGsm / 15500 / 100 * qty
+      if (twoPiece) {
+        bk['Wrap paper'] = areaSqIn * wGsm * wr / 15500 / 100 * qty * mult * sidesMult
+      } else {
+        bk['Wrap paper'] = sL * sW * wGsm * wr / 15500 / 100 * eff * sidesMult
+      }
+      matKg = areaSqIn * wGsm / 15500 / 100 * qty
     }
-    // Greyboard
-    const gbGsm  = 1.3 * (gbThick/10) * 10000
-    const boardSqIn = (2*(L*W)+2*(L*H)+2*(W*H)) * qty
-    const boardKg   = boardSqIn * 6.4516 * gbGsm / 10000 / 1000
-    bk[`Greyboard ${gbThick}mm`] = boardKg * rates.gb
-    matKg += boardKg
+    const greyboardCost = twoPiece
+      ? calculateGreyboard({ lengthIn:L, widthIn:W, heightIn:H, thicknessMm:gbThick, quantity:qty })
+        + calculateGreyboard({ lengthIn:L+0.157, widthIn:W+0.157, heightIn:H, thicknessMm:gbThick, quantity:qty })
+      : calculateGreyboard({ lengthIn:L, widthIn:W, heightIn:H, thicknessMm:gbThick, quantity:qty })
+    bk[`Greyboard ${gbThick}mm`] = greyboardCost
+    matKg += greyboardCost / 300
+    bk['Making'] = calculateRigidBoxMaking(qty)
   } else {
     const stockRateMap: Record<string,number> = { bleach:rates.bleach, art:rates.art, alb:rates.alb, krf:rates.krf }
     const rate = stockRateMap[stockKey] ?? rates.bleach
@@ -265,19 +317,31 @@ export function calcTier(input: CalcInput): CalcTier {
     const lamRate = isC ? rates.lam_corr :
       lam==='gloss' ? rates.lam_gloss :
       lam==='matte' ? rates.lam_matte : rates.lam_soft
-    bk['Lamination'] = sL * sW / 144 * lamRate * eff * sidesMult
+    bk['Lamination'] = twoPiece
+      ? areaSqIn / 144 * lamRate * qty * mult * sidesMult
+      : sL * sW / 144 * lamRate * eff * sidesMult
   }
 
   // ── Foil ───────────────────────────────────────────────────────
-  if (foilSqIn > 0) bk['Foil block'] = foilSqIn * rates.foil
+  const foiling = calculateFoiling({
+    flatSizeSqIn: input.foilSqIn && input.foilSqIn > 0 ? input.foilSqIn : areaSqIn,
+    enabled: Boolean(input.foilEnabled || (input.foilSqIn && input.foilSqIn > 0)),
+  })
+  if (foiling.blockCostPKR > 0) bk['Block'] = foiling.blockCostPKR
+  if (foiling.foilingCostPKR > 0) bk['Foiling'] = foiling.foilingCostPKR
+
+  const uvCost = calculateUVCoating({ flatSizeSqIn: areaSqIn, enabled: Boolean(input.uvEnabled) })
+  if (uvCost > 0) bk['UV Coating'] = uvCost
 
   // ── Die ────────────────────────────────────────────────────────
-  if (die === 'new')      { bk['Die making'] = rates.die_make; bk['Die cutting'] = rates.die_cut }
-  else if (die === 'existing') bk['Die cutting'] = rates.die_cut
+  const dieMaking = calculateDieMaking({ openSizeSqIn: areaSqIn, dieOption: die })
+  const dieCutting = die === 'none' ? 0 : calculateDieCutting({ sheets: eff })
+  if (dieMaking > 0) bk['Die Making'] = dieMaking
+  if (dieCutting > 0) bk['Die Cutting'] = dieCutting
 
   // ── Pasting ────────────────────────────────────────────────────
-  if (paste === 'auto') bk['Machine pasting'] = rates.paste_auto * qty
-  else if (paste === 'hand') bk['Manual pasting'] = rates.paste_hand * qty
+  if (paste === 'auto') bk['Pasting'] = calculatePasting({ type:'machine', quantity:qty })
+  else if (paste === 'hand') bk['Pasting'] = calculatePasting({ type:'manual', sheets:eff })
 
   // ── Accessories ────────────────────────────────────────────────
   if (ribQty > 0) bk['Ribbon'] = ribQty * rates.ribbon
@@ -295,17 +359,27 @@ export function calcTier(input: CalcInput): CalcTier {
   // ── Shipping ───────────────────────────────────────────────────
   const cartons  = Math.ceil(qty / bpc)
   const shipKg   = cartons * cWt
-  const shipRate = 0 // shipping rates looked up separately in component
-  if (shipRate > 0) bk['Shipping'] = shipRate
+  const cartonL = input.cartonL || L
+  const cartonW = input.cartonW || W
+  const cartonH = input.cartonH || H
+  const shipping = calculateShipping({
+    destination: input.destination || 'USA',
+    zipCode: input.customerZip,
+    actualWeightKg: shipKg,
+    cartonLcm: cartonL * 2.54,
+    cartonWcm: cartonW * 2.54,
+    cartonHcm: cartonH * 2.54 * cartons,
+  })
+  if (shipping.selectedRatePKR > 0) bk['Shipping'] = shipping.selectedRatePKR
 
   const totalCost = Object.values(bk).reduce((a,b)=>a+b, 0)
-  const profit    = totalCost * (prof/100)
-  bk[`Vendor profit (${prof}%)`] = profit
-  const finalPKR  = totalCost + profit
   const divisor   = rates.div_usd || 280
-  const finalUSD  = finalPKR / divisor
+  const pricing = calculateSellingPrice(totalCost, salesMarginPct, divisor)
+  const profit = pricing.marginAmountPKR
+  const finalPKR = pricing.sellingPricePKR
+  const finalUSD = pricing.sellingPriceUSD
   const unitUSD   = finalUSD / qty
-  const margin    = profit / finalPKR * 100
+  const margin    = pricing.effectiveMarginPct
 
   // ── DHL box selection ──────────────────────────────────────────
   const Lcm = L*2.54, Wcm = W*2.54, Hcm = H*2.54
@@ -319,15 +393,18 @@ export function calcTier(input: CalcInput): CalcTier {
 
   return {
     qty, bk, totalCost, profit, finalPKR, finalUSD, unitUSD, margin,
+    salesMarginPct, salesMarginPKR: profit,
+    shippingPkr: shipping.selectedRatePKR,
+    shipping,
     matKg, shipKg, cartons, volWt, chargeWt, dhlBox,
-    effSheets: eff, mult, flat, machine, sheet, ups
+    effSheets: eff, mult, flat, machine, sheet, ups, twoPiece
   }
 }
 
 // Default rates matching Supabase seed data
 export const DEFAULT_RATES: Record<string,number> = {
   bleach:330, art:350, alb:450, krf:310, wrap:410,
-  gb:250, mor:600, eva:4.75,
+  gb:300, mor:600, eva:4.75,
   corr_liner:0.20, corr_board_e:0.07, corr_board_b:0.14, corr_board_c:0.21,
   lam_gloss:3.5, lam_matte:4.0, lam_soft:40.0, lam_corr:6.0,
   foil:90, die_make:8000, die_cut:6000,

@@ -4,33 +4,17 @@ import { useRouter } from 'next/navigation'
 import Sidebar from '@/components/Sidebar'
 import { createClient } from '@/lib/supabase/client'
 import { calcTier, flatSize, autoMachine, bestSheet, DEFAULT_RATES, type BoxStyle, type CalcInput, type CalcTier } from '@/lib/engine'
+import { calculateSellingPrice } from '@/lib/pricing'
 import { generateQuotePDF, downloadPDF } from '@/lib/pdf'
-
-const SHIPPING_RATES: Record<string, [number,number][]> = {
-  'DHL|USA':        [[1,17808],[2,21840],[5,42000],[10,62720],[15,88480],[20,115920],[30,158160],[50,263600],[75,395400],[100,527200]],
-  'Skynet|UK':      [[1,5529],[2,7794],[5,14589],[10,25914],[20,48564],[30,71214],[50,116514],[100,229764]],
-  'UK Cargo|UK':    [[1,4297],[2,6028],[5,11218],[10,19869],[20,37171],[50,92343],[100,183286]],
-  'JFK Premium|1':  [[1,12118],[2,14461],[5,21978],[10,33912],[20,60804],[50,132300],[100,259200]],
-  'JFK Premium|2':  [[1,12500],[2,14847],[5,22608],[10,35677],[20,61884],[50,135000],[100,264600]],
-  'JFK Premium|3':  [[1,12500],[2,15312],[5,24119],[10,37929],[20,62964],[50,137700],[100,270000]],
-}
-
-function shipRate(courier: string, zone: string, kg: number): number {
-  const tbl = SHIPPING_RATES[`${courier}|${zone}`]
-  if (!tbl || !kg) return 0
-  const wc = Math.ceil(kg)
-  for (const [w,r] of tbl) if (w>=wc) return r
-  return tbl[tbl.length-1][1]
-}
 
 const BOX_STYLES = [
   { value:'tuck',       label:'Tuck end box',            group:'Folding / Paperboard' },
   { value:'mailer',     label:'Mailer / auto-bottom',    group:'Folding / Paperboard' },
   { value:'sleeve',     label:'Sleeve',                  group:'Folding / Paperboard' },
-  { value:'2pc',        label:'2-piece lid & base',      group:'Folding / Paperboard' },
   { value:'4corner',    label:'4-corner box',            group:'Folding / Paperboard' },
+  { value:'2pc',        label:'2-piece rigid lid & tray', group:'Rigid' },
   { value:'rigid-mag',  label:'Rigid — magnetic closure',group:'Rigid' },
-  { value:'rigid-book', label:'Rigid — bookend / 2-piece',group:'Rigid' },
+  { value:'rigid-book', label:'Rigid — bookend',          group:'Rigid' },
   { value:'corr-rsc',   label:'RSC shipping carton',     group:'Corrugated' },
   { value:'corr-mail',  label:'Corrugated mailer',       group:'Corrugated' },
 ]
@@ -38,7 +22,7 @@ const BOX_STYLES = [
 type Tier = { qty: number }
 
 function defaultGsmForStyle(boxStyle: BoxStyle): string {
-  if (boxStyle.startsWith('rigid')) return '150'
+  if (boxStyle.startsWith('rigid') || boxStyle === '2pc') return '150'
   if (boxStyle.startsWith('corr')) return '200'
   return '350'
 }
@@ -70,16 +54,20 @@ export default function NewQuotePage() {
   const [die, setDie] = useState<'none'|'new'|'existing'>('new')
   const [paste, setPaste] = useState<'none'|'auto'|'hand'>('none')
   const [scan, setScan] = useState('500')
-  const [foilSq, setFoilSq] = useState('0')
+  const [foilEnabled, setFoilEnabled] = useState(false)
+  const [uvEnabled, setUvEnabled] = useState(false)
   const [foamOn, setFoamOn] = useState(false)
   const [fLins, setFLins] = useState(''); const [fWins, setFWins] = useState('')
   const [ribQty, setRibQty] = useState('0'); const [magQty, setMagQty] = useState('0')
   const [rush, setRush] = useState('0')
   const [prof, setProf] = useState('30')
-  const [courier, setCourier] = useState('DHL')
-  const [zone, setZone] = useState('USA')
   const [bpc, setBpc] = useState('24'); const [cWt, setCWt] = useState('5')
-  const [results, setResults] = useState<(CalcTier & {shipPkr:number})[] | null>(null)
+  const [destination, setDestination] = useState<'USA'|'UK'>('USA')
+  const [customerZip, setCustomerZip] = useState('')
+  const [cartonL, setCartonL] = useState('')
+  const [cartonW, setCartonW] = useState('')
+  const [cartonH, setCartonH] = useState('')
+  const [results, setResults] = useState<CalcTier[] | null>(null)
   const [fileUploading, setFileUploading] = useState(false)
   const [aiResult, setAiResult] = useState('')
 
@@ -99,7 +87,7 @@ export default function NewQuotePage() {
     })
   }, [router, supabase])
 
-  const isRigid = style.startsWith('rigid')
+  const isRigid = style.startsWith('rigid') || style === '2pc'
   const isCorr  = style.startsWith('corr')
 
   function toin(v: string): number {
@@ -135,37 +123,40 @@ export default function NewQuotePage() {
       L:toin(L), W:toin(W), H:toin(H), style, qty,
       gsm:parseInt(gsm)||350, stockKey, wrapType, gbThick:parseFloat(gbThick)||2, flute,
       pSpec, lam: (wrapType==='mor'?'none':lam), sides, die, paste,
-      scan:parseInt(scan)||0, foilSqIn:parseFloat(foilSq)||0,
+      scan:parseInt(scan)||0, foilEnabled, uvEnabled,
       foamOn, fL_ins:parseFloat(fLins)||0, fW_ins:parseFloat(fWins)||0,
       ribQty:parseInt(ribQty)||0, magQty:parseInt(magQty)||0,
-      rush:parseInt(rush)||0, prof:parseInt(prof)||30,
-      courier, zone, bpc:parseInt(bpc)||24, cWt:parseFloat(cWt)||5,
+      rush:parseInt(rush)||0, prof:parseInt(prof)||30, salesMarginPct:parseInt(prof)||30,
+      courier:'Auto', zone:destination, bpc:parseInt(bpc)||24, cWt:parseFloat(cWt)||5,
+      destination, customerZip,
+      cartonL:parseFloat(cartonL)||toin(L), cartonW:parseFloat(cartonW)||toin(W), cartonH:parseFloat(cartonH)||toin(H),
       rates,
     }
+  }
+
+  function updateSalesMargin(next: string) {
+    setProf(next)
+    const pct = parseInt(next) || 30
+    setResults(prev => prev?.map(r => {
+      const pricing = calculateSellingPrice(r.totalCost, pct, rates.div_usd || 280)
+      return {
+        ...r,
+        profit: pricing.marginAmountPKR,
+        finalPKR: pricing.sellingPricePKR,
+        finalUSD: pricing.sellingPriceUSD,
+        unitUSD: pricing.sellingPriceUSD / r.qty,
+        margin: pricing.effectiveMarginPct,
+        salesMarginPct: pct,
+        salesMarginPKR: pricing.marginAmountPKR,
+      }
+    }) ?? null)
   }
 
   function runCalc() {
     if (!Linch||!Winch||!Hinch||!tiers.length) return
     setCalcLoading(true)
     setTimeout(()=>{
-      const res = tiers.map(t=>{
-        const inp = buildInput(t.qty)
-        const r   = calcTier(inp)
-        const kg  = r.shipKg
-        const sr  = shipRate(courier,zone,kg)
-        // add shipping into bk
-        if (sr>0) r.bk[`Shipping (${courier}, ${kg.toFixed(0)}kg)`] = sr
-        // recalc totals with shipping
-        const totalWithShip = Object.entries(r.bk).filter(([k])=>!k.includes('profit')).reduce((a,[,v])=>a+v,0)
-        const profit2 = totalWithShip * ((parseInt(prof)||30)/100)
-        r.bk[`Vendor profit (${prof}%)`] = profit2
-        const finalPKR2 = totalWithShip + profit2
-        r.finalPKR = finalPKR2
-        r.finalUSD = finalPKR2 / (rates.div_usd||280)
-        r.unitUSD  = r.finalUSD / t.qty
-        r.margin   = profit2 / finalPKR2 * 100
-        return { ...r, shipPkr:sr }
-      })
+      const res = tiers.map(t=>calcTier(buildInput(t.qty)))
       setResults(res)
       setCalcLoading(false)
       setStep(3)
@@ -225,7 +216,9 @@ export default function NewQuotePage() {
       print_spec: pSpec, lamination: lam, print_sides: sides, die, pasting: paste,
       foam_insert: foamOn, foam_l: parseFloat(fLins)||null, foam_w: parseFloat(fWins)||null,
       rush_pct: parseInt(rush), profit_pct: parseInt(prof), divisor: rates.div_usd||280,
-      courier, zone, machine_used: first.machine.name, sheet_size: `${first.sheet[0]}×${first.sheet[1]}`,
+      courier: first.shipping?.selectedCourier || 'Auto',
+      zone: first.shipping?.selectedZone ? String(first.shipping.selectedZone) : destination,
+      machine_used: first.machine.name, sheet_size: `${first.sheet[0]}×${first.sheet[1]}`,
       status: 'pending',
     }).select().single()
 
@@ -236,10 +229,10 @@ export default function NewQuotePage() {
           eff_sheets: r.effSheets, qty_multiplier: r.mult,
           stock_pkr: r.bk['Paper stock']||r.bk['Wrap paper']||r.bk['Corrugated liner']||0,
           lam_pkr: r.bk['Lamination']||0, print_pkr: r.bk['Printing']||0,
-          die_pkr: (r.bk['Die making']||0)+(r.bk['Die cutting']||0),
+          die_pkr: (r.bk['Die Making']||0)+(r.bk['Die Cutting']||0),
           foam_pkr: r.bk['EVA foam insert']||0,
-          pasting_pkr: r.bk['Machine pasting']||r.bk['Manual pasting']||0,
-          shipping_pkr: r.shipPkr,
+          pasting_pkr: r.bk['Pasting']||0,
+          shipping_pkr: r.shippingPkr,
           profit_pkr: r.profit, total_pkr: r.finalPKR,
           total_usd: r.finalUSD, unit_usd: r.unitUSD, margin_pct: r.margin,
           mat_weight_kg: r.matKg, ship_weight_kg: r.shipKg,
@@ -262,7 +255,9 @@ export default function NewQuotePage() {
       dimensions: `${L}×${W}×${H} ${unit}`,
       flatSize: `${first.flat.fL.toFixed(3)}" × ${first.flat.fW.toFixed(3)}"`,
       machineUsed: first.machine.name,
-      dhlBox: first.dhlBox ? `DHL Box ${first.dhlBox.n}` : 'Custom freight',
+      dhlBox: first.shipping
+        ? `${first.shipping.selectedCourier} · ${first.shipping.chargeableWeightKg}kg`
+        : first.dhlBox ? `DHL Box ${first.dhlBox.n}` : 'Custom freight',
       tiers: results.map(r=>({ qty:r.qty, totalUSD:r.finalUSD, unitUSD:r.unitUSD, totalPKR:r.finalPKR, margin:r.margin })),
       breakdown: internal ? first.bk : undefined,
       isInternal: internal,
@@ -271,8 +266,6 @@ export default function NewQuotePage() {
   }
 
   if (!user) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:'#86868B'}}>Loading…</div>
-
-  const zones = Object.keys(SHIPPING_RATES).filter(k=>k.startsWith(courier+'|')).map(k=>k.split('|')[1])
 
   return (
     <div style={{display:'flex',minHeight:'100vh'}}>
@@ -465,28 +458,37 @@ export default function NewQuotePage() {
                 {/* Lamination */}
                 <div className="card" style={{padding:'18px 20px',marginBottom:'14px'}}>
                   <div style={{fontSize:'11px',fontWeight:'600',color:'#86868B',textTransform:'uppercase',letterSpacing:'.6px',marginBottom:'12px'}}>Lamination &amp; Finishing</div>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'10px'}}>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px',marginBottom:'10px'}}>
                     <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Lamination {wrapType==='mor'&&<span style={{color:'#FF9F0A'}}>(disabled — Morocco)</span>}</label>
                       <select className="input" value={lam} onChange={e=>setLam(e.target.value as typeof lam)} disabled={wrapType==='mor'}>
                         <option value="none">None</option><option value="gloss">Gloss (Rs3.5/sqft)</option>
                         <option value="matte">Matte (Rs4/sqft)</option><option value="soft">Soft touch (Rs40/sqft)</option>
                       </select>
                     </div>
-                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Foil block (sq in)</label>
-                      <input className="input" type="number" value={foilSq} onChange={e=>setFoilSq(e.target.value)} step="0.5"/>
+                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Foiling</label>
+                      <select className="input" value={foilEnabled?'yes':'no'} onChange={e=>setFoilEnabled(e.target.value==='yes')}>
+                        <option value="no">No foil</option>
+                        <option value="yes">Yes — block + foil</option>
+                      </select>
+                    </div>
+                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>UV coating</label>
+                      <select className="input" value={uvEnabled?'yes':'no'} onChange={e=>setUvEnabled(e.target.value==='yes')}>
+                        <option value="no">No UV</option>
+                        <option value="yes">Yes — Rs6/sqft</option>
+                      </select>
                     </div>
                   </div>
                   <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
                     <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Die</label>
                       <select className="input" value={die} onChange={e=>setDie(e.target.value as typeof die)}>
-                        <option value="none">No die</option><option value="new">New die (Rs8,000)</option>
+                        <option value="none">No die</option><option value="new">New die</option>
                         <option value="existing">Existing die</option>
                       </select>
                     </div>
                     <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Pasting / assembly</label>
                       <select className="input" value={paste} onChange={e=>setPaste(e.target.value as typeof paste)}>
                         <option value="none">None</option><option value="auto">Machine (Rs0.70/unit)</option>
-                        <option value="hand">Manual (Rs25/unit)</option>
+                        <option value="hand">Manual (Rs1,000/1k sheets)</option>
                       </select>
                     </div>
                   </div>
@@ -529,16 +531,14 @@ export default function NewQuotePage() {
                 <div className="card" style={{padding:'18px 20px',marginBottom:'14px'}}>
                   <div style={{fontSize:'11px',fontWeight:'600',color:'#86868B',textTransform:'uppercase',letterSpacing:'.6px',marginBottom:'12px'}}>Shipping &amp; Margin</div>
                   <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'10px'}}>
-                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Courier</label>
-                      <select className="input" value={courier} onChange={e=>{setCourier(e.target.value);setZone(Object.keys(SHIPPING_RATES).find(k=>k.startsWith(e.target.value+'|'))?.split('|')[1]||'USA')}}>
-                        <option value="DHL">DHL (USA)</option><option value="Skynet">Skynet (UK)</option>
-                        <option value="UK Cargo">UK Cargo (UK)</option><option value="JFK Premium">JFK Premium</option>
+                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Destination</label>
+                      <select className="input" value={destination} onChange={e=>setDestination(e.target.value as 'USA'|'UK')}>
+                        <option value="USA">USA — auto DHL/JFK</option>
+                        <option value="UK">UK — Skynet</option>
                       </select>
                     </div>
-                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Zone</label>
-                      <select className="input" value={zone} onChange={e=>setZone(e.target.value)}>
-                        {zones.map(z=><option key={z} value={z}>{z}</option>)}
-                      </select>
+                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Customer zip</label>
+                      <input className="input" type="text" value={customerZip} onChange={e=>setCustomerZip(e.target.value)} placeholder={destination==='USA'?'e.g. 10001':'Optional'} disabled={destination!=='USA'}/>
                     </div>
                   </div>
                   <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'10px'}}>
@@ -547,9 +547,17 @@ export default function NewQuotePage() {
                     <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Carton weight (kg)</label>
                       <input className="input" type="number" value={cWt} step="0.5" onChange={e=>setCWt(e.target.value)}/></div>
                   </div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px',marginBottom:'10px'}}>
+                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Carton L (in)</label>
+                      <input className="input" type="number" value={cartonL} step="0.125" onChange={e=>setCartonL(e.target.value)} placeholder={L||'auto'}/></div>
+                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Carton W (in)</label>
+                      <input className="input" type="number" value={cartonW} step="0.125" onChange={e=>setCartonW(e.target.value)} placeholder={W||'auto'}/></div>
+                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Carton H (in)</label>
+                      <input className="input" type="number" value={cartonH} step="0.125" onChange={e=>setCartonH(e.target.value)} placeholder={H||'auto'}/></div>
+                  </div>
                   <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
-                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Profit margin (%)</label>
-                      <input className="input" type="number" value={prof} onChange={e=>setProf(e.target.value)}/></div>
+                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Sales margin (%)</label>
+                      <input className="input" type="number" min="10" max="60" value={prof} onChange={e=>setProf(e.target.value)}/></div>
                     <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Rush surcharge</label>
                       <select className="input" value={rush} onChange={e=>setRush(e.target.value)}>
                         <option value="0">Standard</option><option value="10">1-week rush (+10%)</option>
@@ -603,13 +611,33 @@ export default function NewQuotePage() {
                 <div style={{background:'linear-gradient(135deg,rgba(10,132,255,0.14),rgba(10,132,255,0.04))',border:'0.5px solid rgba(10,132,255,0.25)',borderRadius:'16px',padding:'22px 24px',marginBottom:'14px',position:'relative',overflow:'hidden'}}>
                   <div style={{position:'absolute',top:'-40px',right:'-40px',width:'120px',height:'120px',background:'radial-gradient(circle,rgba(10,132,255,0.15),transparent 70%)',borderRadius:'50%'}}/>
                   <div style={{fontSize:'11px',color:'#0A84FF',fontWeight:'600',letterSpacing:'.5px',textTransform:'uppercase',marginBottom:'6px'}}>
-                    {results[0].qty.toLocaleString()} units — lowest quantity
+                    {results[0].qty.toLocaleString()} units — selling price
                   </div>
                   <div style={{fontFamily:'var(--font-syne)',fontSize:'44px',fontWeight:'800',letterSpacing:'-2px',lineHeight:'1',marginBottom:'6px'}}>
                     ${results[0].finalUSD.toFixed(2)}
                   </div>
                   <div style={{fontSize:'13px',color:'rgba(255,255,255,0.5)'}}>
-                    ${results[0].unitUSD.toFixed(3)}/unit · Rs {Math.round(results[0].finalPKR).toLocaleString()} PKR · {results[0].margin.toFixed(1)}% margin
+                    ${results[0].unitUSD.toFixed(3)}/unit · Rs {Math.round(results[0].finalPKR).toLocaleString()} PKR · {results[0].salesMarginPct}% sales margin
+                  </div>
+                </div>
+
+                <div className="card" style={{padding:'14px 16px',marginBottom:'14px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'16px'}}>
+                    <div style={{minWidth:'170px'}}>
+                      <div style={{fontSize:'10px',color:'#48484A',fontWeight:'600',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:'3px'}}>Sales Margin</div>
+                      <div style={{fontFamily:'var(--font-syne)',fontSize:'24px',fontWeight:'800'}}>{prof}%</div>
+                    </div>
+                    <input type="range" min="10" max="60" value={prof} onChange={e=>updateSalesMargin(e.target.value)} style={{flex:1}}/>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',minWidth:'260px'}}>
+                      <div>
+                        <div style={{fontSize:'10px',color:'#48484A',fontWeight:'600',textTransform:'uppercase',letterSpacing:'.5px'}}>Selling PKR</div>
+                        <div style={{fontFamily:'var(--font-dm-mono)',fontSize:'13px',color:'#F5F5F7'}}>Rs {Math.round(results[0].finalPKR).toLocaleString()}</div>
+                      </div>
+                      <div>
+                        <div style={{fontSize:'10px',color:'#48484A',fontWeight:'600',textTransform:'uppercase',letterSpacing:'.5px'}}>Selling USD</div>
+                        <div style={{fontFamily:'var(--font-dm-mono)',fontSize:'13px',color:'#0A84FF'}}>${results[0].finalUSD.toFixed(2)}</div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -663,24 +691,24 @@ export default function NewQuotePage() {
                       </div>
                     </div>
 
-                    {/* DHL box */}
-                    {results[0].dhlBox && (
+                    {/* Smart shipping */}
+                    {results[0].shipping && (
                       <div className="card" style={{padding:'14px 16px'}}>
                         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'8px'}}>
                           <div>
-                            <div style={{fontSize:'10px',color:'#48484A',fontWeight:'600',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:'3px'}}>DHL Box Recommended</div>
-                            <div style={{fontFamily:'var(--font-syne)',fontSize:'26px',fontWeight:'800',letterSpacing:'-1px'}}>Box {results[0].dhlBox.n}</div>
+                            <div style={{fontSize:'10px',color:'#48484A',fontWeight:'600',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:'3px'}}>Smart Shipping</div>
+                            <div style={{fontFamily:'var(--font-syne)',fontSize:'20px',fontWeight:'800',letterSpacing:'-.5px'}}>{results[0].shipping.selectedCourier}</div>
                           </div>
-                          <span className={`badge ${results[0].volWt > results[0].matKg/results[0].qty ? 'badge-amber' : 'badge-green'}`}>
-                            {results[0].volWt > results[0].matKg/results[0].qty ? 'Volumetric' : 'Actual weight'}
+                          <span className={`badge ${results[0].shipping.savingsPKR && results[0].shipping.savingsPKR > 0 ? 'badge-green' : 'badge-amber'}`}>
+                            {results[0].shipping.deliveryDays}
                           </span>
                         </div>
-                        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'8px'}}>
+                        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'8px',marginBottom:results[0].shipping.flag?'8px':'0'}}>
                           {[
-                            ['Dims', `${results[0].dhlBox.L}×${results[0].dhlBox.W}×${results[0].dhlBox.H}cm`],
-                            ['Max', `${results[0].dhlBox.maxKg}kg`],
-                            ['Vol wt', `${results[0].volWt.toFixed(1)}kg`],
-                            ['Chargeable', `${results[0].chargeWt.toFixed(1)}kg`],
+                            ['Cost', `Rs ${Math.round(results[0].shipping.selectedRatePKR).toLocaleString()}`],
+                            ['Chargeable', `${results[0].shipping.chargeableWeightKg}kg`],
+                            ['Vol wt', `${results[0].shipping.volumetricWeightKg.toFixed(1)}kg`],
+                            ['Saving', results[0].shipping.savingsPKR ? `Rs ${Math.round(results[0].shipping.savingsPKR).toLocaleString()}` : '—'],
                           ].map(([l,v])=>(
                             <div key={String(l)}>
                               <div style={{fontSize:'10px',color:'#48484A',fontWeight:'600',textTransform:'uppercase',letterSpacing:'.4px'}}>{l}</div>
@@ -688,6 +716,11 @@ export default function NewQuotePage() {
                             </div>
                           ))}
                         </div>
+                        {results[0].shipping.flag && (
+                          <div style={{fontSize:'11px',color:'#FF9F0A',background:'rgba(255,159,10,.08)',border:'0.5px solid rgba(255,159,10,.2)',borderRadius:'6px',padding:'7px 9px'}}>
+                            {results[0].shipping.flag}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -702,14 +735,22 @@ export default function NewQuotePage() {
                   <div style={{padding:'4px 0'}}>
                     {Object.entries(results[0].bk).map(([k,v])=>(
                       <div key={k} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 16px',borderBottom:'0.5px solid rgba(255,255,255,0.05)',fontSize:'13px'}}>
-                        <span style={{color:k.includes('profit')?'#30D158':'#86868B'}}>{k}</span>
-                        <span style={{fontFamily:'var(--font-dm-mono)',fontSize:'12px',color:k.includes('profit')?'#30D158':'#F5F5F7',fontWeight:k.includes('profit')?'600':'400'}}>
+                        <span style={{color:'#86868B'}}>{k}</span>
+                        <span style={{fontFamily:'var(--font-dm-mono)',fontSize:'12px',color:'#F5F5F7',fontWeight:'400'}}>
                           Rs {Math.round(Number(v)).toLocaleString()}
                         </span>
                       </div>
                     ))}
+                    <div style={{display:'flex',justifyContent:'space-between',padding:'9px 16px',fontWeight:'600',fontSize:'13px'}}>
+                      <span>Cost total</span>
+                      <span style={{fontFamily:'var(--font-dm-mono)'}}>Rs {Math.round(results[0].totalCost).toLocaleString()}</span>
+                    </div>
+                    <div style={{display:'flex',justifyContent:'space-between',padding:'9px 16px',borderTop:'0.5px solid rgba(255,255,255,0.06)',fontWeight:'600',fontSize:'13px',color:'#30D158'}}>
+                      <span>Sales margin ({results[0].salesMarginPct}%)</span>
+                      <span style={{fontFamily:'var(--font-dm-mono)'}}>Rs {Math.round(results[0].salesMarginPKR).toLocaleString()}</span>
+                    </div>
                     <div style={{display:'flex',justifyContent:'space-between',padding:'10px 16px',background:'rgba(255,255,255,0.04)',fontWeight:'600',fontSize:'14px'}}>
-                      <span>Total PKR</span>
+                      <span>Selling price PKR</span>
                       <span style={{fontFamily:'var(--font-dm-mono)'}}>Rs {Math.round(results[0].finalPKR).toLocaleString()}</span>
                     </div>
                   </div>
