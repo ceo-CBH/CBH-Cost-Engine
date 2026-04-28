@@ -9,10 +9,11 @@ export interface TwoPieceFlatSizes {
   totalAreaSqIn: number; // tray + lid combined (used for stock/lam calc)
 }
 
-// Handover formula for 2-piece lid+base:
-//   fL = L + 2H + 0.5
-//   fW = W + 2H + 0.5
+// Handover formula for 2-piece lid+base, aligned with Marlen audit:
+//   tray fL = L + 2H + 0.375
+//   tray fW = W + 2H + 0.375
 // Lid gets clearance offset of +0.157" on both L and W (verified from die line)
+const TRAY_ALLOWANCE = 0.375;
 const LID_CLEARANCE = 0.157;
 
 export function calculateTwoPieceFlatSizes(
@@ -21,14 +22,14 @@ export function calculateTwoPieceFlatSizes(
   H: number,  // inner box height (inches)
 ): TwoPieceFlatSizes {
   // Tray
-  const trayFl = L + 2 * H + 0.5;
-  const trayFw = W + 2 * H + 0.5;
+  const trayFl = L + 2 * H + TRAY_ALLOWANCE;
+  const trayFw = W + 2 * H + TRAY_ALLOWANCE;
 
   // Lid (slightly larger)
   const lidL = L + LID_CLEARANCE;
   const lidW = W + LID_CLEARANCE;
-  const lidFl = lidL + 2 * H + 0.5;
-  const lidFw = lidW + 2 * H + 0.5;
+  const lidFl = lidL + 2 * H + TRAY_ALLOWANCE;
+  const lidFw = lidW + 2 * H + TRAY_ALLOWANCE;
 
   const trayArea = trayFl * trayFw;
   const lidArea  = lidFl * lidFw;

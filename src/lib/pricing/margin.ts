@@ -1,9 +1,9 @@
-// CBH Two-Layer Margin System
+// CBH Two-Layer Markup System
 //
 // Layer 1 — Vendor Cost (PKR)      ← engine calculates
-// Layer 2 — Sales Margin %         ← salesperson sets (default 30%)
-//         = Selling Price (PKR)
-// Layer 3 — PKR ÷ exchangeRate     = Selling Price (USD) on Customer Quote
+// Layer 2 — Vendor Profit %        ← salesperson sets (default 30%)
+// Layer 3 — Shipping PKR           ← added after vendor profit
+// Layer 4 — PKR ÷ exchangeRate     = Selling Price (USD) on Customer Quote
 //
 // Customer PDF shows USD only.
 // Internal PDF shows full PKR breakdown.
@@ -16,6 +16,8 @@ export interface MarginResult {
   salesMarginPct: number;
   sellingPricePKR: number;
   sellingPriceUSD: number;
+  vendorTotalPKR: number;
+  shippingPKR: number;
   marginAmountPKR: number;
   effectiveMarginPct: number; // confirmation back to user
 }
@@ -24,17 +26,21 @@ export function calculateSellingPrice(
   vendorCostPKR: number,
   salesMarginPct: number = DEFAULT_SALES_MARGIN_PCT,
   pkrUsdRate: number = DEFAULT_PKR_USD_RATE,
+  shippingPKR: number = 0,
 ): MarginResult {
-  const sellingPricePKR = vendorCostPKR / (1 - salesMarginPct / 100);
+  const marginAmountPKR = vendorCostPKR * (salesMarginPct / 100);
+  const vendorTotalPKR = vendorCostPKR + marginAmountPKR;
+  const sellingPricePKR = vendorTotalPKR + shippingPKR;
   const sellingPriceUSD = sellingPricePKR / pkrUsdRate;
-  const marginAmountPKR = sellingPricePKR - vendorCostPKR;
-  const effectiveMarginPct = (marginAmountPKR / sellingPricePKR) * 100;
+  const effectiveMarginPct = sellingPricePKR > 0 ? (marginAmountPKR / sellingPricePKR) * 100 : 0;
 
   return {
     vendorCostPKR: Math.round(vendorCostPKR),
     salesMarginPct,
     sellingPricePKR: Math.round(sellingPricePKR),
     sellingPriceUSD: Math.round(sellingPriceUSD * 100) / 100, // 2 decimal places
+    vendorTotalPKR: Math.round(vendorTotalPKR),
+    shippingPKR: Math.round(shippingPKR),
     marginAmountPKR: Math.round(marginAmountPKR),
     effectiveMarginPct: Math.round(effectiveMarginPct * 10) / 10,
   };

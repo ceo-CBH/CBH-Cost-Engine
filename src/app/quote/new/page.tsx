@@ -39,6 +39,8 @@ export default function NewQuotePage() {
   // Form state
   const [unit, setUnit] = useState<'mm'|'in'>('mm')
   const [L, setL] = useState(''); const [W, setW] = useState(''); const [H, setH] = useState('')
+  const [openL, setOpenL] = useState(''); const [openW, setOpenW] = useState('')
+  const [lidOpenL, setLidOpenL] = useState(''); const [lidOpenW, setLidOpenW] = useState('')
   const [style, setStyle] = useState<BoxStyle>('tuck')
   const [tiers, setTiers] = useState<Tier[]>([{qty:500},{qty:1000}])
   const [newQty, setNewQty] = useState('')
@@ -55,7 +57,9 @@ export default function NewQuotePage() {
   const [paste, setPaste] = useState<'none'|'auto'|'hand'>('none')
   const [scan, setScan] = useState('500')
   const [foilEnabled, setFoilEnabled] = useState(false)
+  const [foilArea, setFoilArea] = useState('')
   const [uvEnabled, setUvEnabled] = useState(false)
+  const [uvArea, setUvArea] = useState('')
   const [foamOn, setFoamOn] = useState(false)
   const [fLins, setFLins] = useState(''); const [fWins, setFWins] = useState('')
   const [ribQty, setRibQty] = useState('0'); const [magQty, setMagQty] = useState('0')
@@ -102,7 +106,13 @@ export default function NewQuotePage() {
 
   // Derived flat size display
   const Linch = toin(L), Winch = toin(W), Hinch = toin(H)
-  const flatDisplay = (Linch && Winch && Hinch) ? flatSize(style,Linch,Winch,Hinch) : null
+  const flatOverride = parseFloat(openL) > 0 && parseFloat(openW) > 0
+    ? { fL: parseFloat(openL), fW: parseFloat(openW) }
+    : null
+  const lidFlatOverride = style === '2pc' && parseFloat(lidOpenL) > 0 && parseFloat(lidOpenW) > 0
+    ? { fL: parseFloat(lidOpenL), fW: parseFloat(lidOpenW) }
+    : null
+  const flatDisplay = flatOverride || ((Linch && Winch && Hinch) ? flatSize(style,Linch,Winch,Hinch) : null)
   const autoMach = flatDisplay ? autoMachine(flatDisplay.fL, flatDisplay.fW) : null
   const autoSheet = flatDisplay ? bestSheet(flatDisplay.fL, flatDisplay.fW) : null
 
@@ -123,7 +133,10 @@ export default function NewQuotePage() {
       L:toin(L), W:toin(W), H:toin(H), style, qty,
       gsm:parseInt(gsm)||350, stockKey, wrapType, gbThick:parseFloat(gbThick)||2, flute,
       pSpec, lam: (wrapType==='mor'?'none':lam), sides, die, paste,
-      scan:parseInt(scan)||0, foilEnabled, uvEnabled,
+      scan:parseInt(scan)||0,
+      foilEnabled, foilAreaSqIn:parseFloat(foilArea)||undefined,
+      uvEnabled, uvAreaSqIn:parseFloat(uvArea)||undefined,
+      flatOverride:flatOverride || undefined, lidFlatOverride:lidFlatOverride || undefined,
       foamOn, fL_ins:parseFloat(fLins)||0, fW_ins:parseFloat(fWins)||0,
       ribQty:parseInt(ribQty)||0, magQty:parseInt(magQty)||0,
       rush:parseInt(rush)||0, prof:parseInt(prof)||30, salesMarginPct:parseInt(prof)||30,
@@ -138,7 +151,7 @@ export default function NewQuotePage() {
     setProf(next)
     const pct = parseInt(next) || 30
     setResults(prev => prev?.map(r => {
-      const pricing = calculateSellingPrice(r.totalCost, pct, rates.div_usd || 280)
+      const pricing = calculateSellingPrice(r.totalCost, pct, rates.div_usd || 280, r.shippingPkr)
       return {
         ...r,
         profit: pricing.marginAmountPKR,
@@ -316,6 +329,20 @@ export default function NewQuotePage() {
                     </div>
                   ))}
                 </div>
+                <div style={{display:'grid',gridTemplateColumns:style==='2pc'?'1fr 1fr 1fr 1fr':'1fr 1fr',gap:'10px',marginBottom:'12px'}}>
+                  <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Open L override (in)</label>
+                    <input className="input" type="number" step="0.001" value={openL} onChange={e=>setOpenL(e.target.value)} placeholder="auto"/></div>
+                  <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Open W override (in)</label>
+                    <input className="input" type="number" step="0.001" value={openW} onChange={e=>setOpenW(e.target.value)} placeholder="auto"/></div>
+                  {style==='2pc' && (
+                    <>
+                      <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Lid open L (in)</label>
+                        <input className="input" type="number" step="0.001" value={lidOpenL} onChange={e=>setLidOpenL(e.target.value)} placeholder="auto"/></div>
+                      <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Lid open W (in)</label>
+                        <input className="input" type="number" step="0.001" value={lidOpenW} onChange={e=>setLidOpenW(e.target.value)} placeholder="auto"/></div>
+                    </>
+                  )}
+                </div>
                 <div>
                   <label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Box style</label>
                   <select className="input" value={style} onChange={e=>handleStyleChange(e.target.value as BoxStyle)}>
@@ -477,6 +504,12 @@ export default function NewQuotePage() {
                         <option value="yes">Yes — Rs6/sqft</option>
                       </select>
                     </div>
+                  </div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'10px'}}>
+                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Foil area override (sq in)</label>
+                      <input className="input" type="number" step="0.01" value={foilArea} onChange={e=>setFoilArea(e.target.value)} placeholder="full flat"/></div>
+                    <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>UV area override (sq in)</label>
+                      <input className="input" type="number" step="0.01" value={uvArea} onChange={e=>setUvArea(e.target.value)} placeholder="full flat"/></div>
                   </div>
                   <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
                     <div><label style={{display:'block',fontSize:'11px',color:'#86868B',marginBottom:'4px',fontWeight:'500'}}>Die</label>

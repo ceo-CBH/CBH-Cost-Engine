@@ -4,6 +4,9 @@
 export { calculateGreyboard } from './greyboard';
 export type { GreyboardParams } from './greyboard';
 
+export { calculateCorrugatedMaterial, calculateCorrugatedWeightKg } from './corrugation';
+export type { CorrugatedMaterialParams } from './corrugation';
+
 export { calculateFoiling } from './foiling';
 export type { FoilingParams, FoilingResult } from './foiling';
 

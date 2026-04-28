@@ -3,6 +3,8 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import {
+  calculateCorrugatedMaterial,
+  calculateCorrugatedWeightKg,
   calculateDieCutting,
   calculateDieMaking,
   calculateFoiling,
@@ -28,10 +30,12 @@ export type DieOption = 'none' | 'new' | 'existing'
 export type PasteOption = 'none' | 'auto' | 'hand'
 export type StockKey = 'bleach' | 'art' | 'alb' | 'krf'
 export type WrapType = 'std' | 'mor' | 'art'
-type FlatSize = { fL: number; fW: number }
+type FlatSize = { fL: number; fW: number; areaSqIn?: number }
 
 // Standard cut sheet sizes — from Sheet Sizes & Machines.txt
 export const ALL_SHEETS: [number, number, string][] = [
+  [20,30,'20×30'], [23,36,'23×36'], [22,28,'22×28'], [27,34,'27×34'],
+  [10,12.5,'10×12.5'],
   [6.5,7.5,'20×30'], [7.5,10,'20×30'], [10,10,'20×30'],
   [10,15,'20×30'], [10,20,'20×30'], [15,20,'20×30'],
   [7.6,9,'23×36'], [7.6,12,'23×36'], [9,11.5,'23×36'],
@@ -89,9 +93,11 @@ export function flatSize(style: BoxStyle, L: number, W: number, H: number) {
   }
 }
 
-function flatArea(style: BoxStyle, L: number, W: number, H: number): number {
-  if (style === '2pc') return calculateTwoPieceFlatSizes(L, W, H).totalAreaSqIn
-  const flat = flatSize(style, L, W, H)
+function withArea(flat: FlatSize): Required<FlatSize> {
+  return { ...flat, areaSqIn: flat.areaSqIn ?? flat.fL * flat.fW }
+}
+
+function flatArea(flat: FlatSize): number {
   return flat.fL * flat.fW
 }
 
@@ -188,8 +194,12 @@ export interface CalcInput {
   paste: PasteOption
   scan: number
   foilSqIn?: number
+  foilAreaSqIn?: number
   foilEnabled?: boolean
+  uvAreaSqIn?: number
   uvEnabled?: boolean
+  flatOverride?: FlatSize
+  lidFlatOverride?: FlatSize
   foamOn: boolean
   fL_ins?: number; fW_ins?: number
   ribQty: number; magQty: number
@@ -239,14 +249,19 @@ export function calcTier(input: CalcInput): CalcTier {
   const stockKey = input.stockKey || 'bleach'
   const wrapType = input.wrapType || 'std'
   const gbThick  = input.gbThick  || 2
-  const flute    = input.flute    || 'B'
   const isR = style.startsWith('rigid') || style === '2pc'
   const isC = style.startsWith('corr')
   const sidesMult = sides === 'both' ? 2 : 1
   const salesMarginPct = input.salesMarginPct ?? input.prof ?? 30
 
-  const twoPiece = style === '2pc' ? calculateTwoPieceFlatSizes(L, W, H) : undefined
-  const flat = twoPiece ? twoPiece.tray : flatSize(style, L, W, H)
+  const calculatedTwoPiece = style === '2pc' ? calculateTwoPieceFlatSizes(L, W, H) : undefined
+  const twoPiece = calculatedTwoPiece ? {
+    tray: withArea(input.flatOverride || calculatedTwoPiece.tray),
+    lid: withArea(input.lidFlatOverride || calculatedTwoPiece.lid),
+    totalAreaSqIn: withArea(input.flatOverride || calculatedTwoPiece.tray).areaSqIn +
+      withArea(input.lidFlatOverride || calculatedTwoPiece.lid).areaSqIn,
+  } : undefined
+  const flat = twoPiece ? twoPiece.tray : (input.flatOverride || flatSize(style, L, W, H))
   const matType = isC ? 'corr' : isR ? 'wrap' : 'pb'
   const mult    = qtyMultiplier(qty, matType)
   const trayPlan = productionPlan(flat, qty, mult)
@@ -254,23 +269,38 @@ export function calcTier(input: CalcInput): CalcTier {
   const machine = lidPlan && lidPlan.machine.pL*lidPlan.machine.pW > trayPlan.machine.pL*trayPlan.machine.pW
     ? lidPlan.machine
     : trayPlan.machine
-  const sheet = trayPlan.sheet
+  const sheet = lidPlan && lidPlan.sheet[0]*lidPlan.sheet[1] > trayPlan.sheet[0]*trayPlan.sheet[1]
+    ? lidPlan.sheet
+    : trayPlan.sheet
   const [sL, sW] = sheet
   const mr = MACHINE_RATES[machine.id]
   const ups = trayPlan.ups
   const eff = trayPlan.eff + (lidPlan?.eff || 0)
-  const areaSqIn = flatArea(style, L, W, H)
+  const areaSqIn = twoPiece ? twoPiece.totalAreaSqIn : flatArea(flat)
   const bk: Record<string,number> = {}
   let matKg = 0
 
   // ── Material cost ──────────────────────────────────────────────
   if (isC) {
-    const linerCost = flat.fL * flat.fW * rates.corr_liner * qty * sidesMult
-    const boardRate = flute==='E' ? rates.corr_board_e : flute==='B' ? rates.corr_board_b : rates.corr_board_c
-    const boardCost = flat.fL * flat.fW * boardRate * qty
+    const sheetAreaSqIn = sL * sW
+    const linerCost = calculateCorrugatedMaterial({
+      sheetAreaSqIn,
+      sheets: eff,
+      sides: sidesMult,
+      gsm,
+      ratePerKg: rates.bleach,
+    })
+    const boardCost = calculateCorrugatedMaterial({
+      sheetAreaSqIn,
+      sheets: eff,
+      sides: sidesMult,
+      gsm: 250,
+      ratePerKg: rates.gb || 300,
+    })
     bk['Corrugated liner'] = linerCost
     bk['Corrugated board'] = boardCost
-    matKg = calcWeight(style, flat.fL, flat.fW, gsm, qty, flute)
+    matKg = calculateCorrugatedWeightKg({ sheetAreaSqIn, sheets: eff, sides: sidesMult, gsm }) +
+      calculateCorrugatedWeightKg({ sheetAreaSqIn, sheets: eff, sides: sidesMult, gsm: 250 })
   } else if (isR) {
     if (wrapType === 'mor') {
       const sqmPerBox = (areaSqIn * 6.4516) / 10000
@@ -286,10 +316,7 @@ export function calcTier(input: CalcInput): CalcTier {
       }
       matKg = areaSqIn * wGsm / 15500 / 100 * qty
     }
-    const greyboardCost = twoPiece
-      ? calculateGreyboard({ lengthIn:L, widthIn:W, heightIn:H, thicknessMm:gbThick, quantity:qty })
-        + calculateGreyboard({ lengthIn:L+0.157, widthIn:W+0.157, heightIn:H, thicknessMm:gbThick, quantity:qty })
-      : calculateGreyboard({ lengthIn:L, widthIn:W, heightIn:H, thicknessMm:gbThick, quantity:qty })
+    const greyboardCost = calculateGreyboard({ openSizeSqIn: areaSqIn, thicknessMm:gbThick, quantity:qty })
     bk[`Greyboard ${gbThick}mm`] = greyboardCost
     matKg += greyboardCost / 300
     bk['Making'] = calculateRigidBoxMaking(qty)
@@ -323,14 +350,18 @@ export function calcTier(input: CalcInput): CalcTier {
   }
 
   // ── Foil ───────────────────────────────────────────────────────
+  const foilArea = input.foilAreaSqIn && input.foilAreaSqIn > 0
+    ? input.foilAreaSqIn
+    : input.foilSqIn && input.foilSqIn > 0 ? input.foilSqIn : areaSqIn
   const foiling = calculateFoiling({
-    flatSizeSqIn: input.foilSqIn && input.foilSqIn > 0 ? input.foilSqIn : areaSqIn,
-    enabled: Boolean(input.foilEnabled || (input.foilSqIn && input.foilSqIn > 0)),
+    flatSizeSqIn: foilArea,
+    enabled: Boolean(input.foilEnabled || (input.foilSqIn && input.foilSqIn > 0) || (input.foilAreaSqIn && input.foilAreaSqIn > 0)),
   })
   if (foiling.blockCostPKR > 0) bk['Block'] = foiling.blockCostPKR
   if (foiling.foilingCostPKR > 0) bk['Foiling'] = foiling.foilingCostPKR
 
-  const uvCost = calculateUVCoating({ flatSizeSqIn: areaSqIn, enabled: Boolean(input.uvEnabled) })
+  const uvArea = input.uvAreaSqIn && input.uvAreaSqIn > 0 ? input.uvAreaSqIn : areaSqIn
+  const uvCost = calculateUVCoating({ flatSizeSqIn: uvArea, enabled: Boolean(input.uvEnabled || (input.uvAreaSqIn && input.uvAreaSqIn > 0)) })
   if (uvCost > 0) bk['UV Coating'] = uvCost
 
   // ── Die ────────────────────────────────────────────────────────
@@ -370,11 +401,10 @@ export function calcTier(input: CalcInput): CalcTier {
     cartonWcm: cartonW * 2.54,
     cartonHcm: cartonH * 2.54 * cartons,
   })
-  if (shipping.selectedRatePKR > 0) bk['Shipping'] = shipping.selectedRatePKR
 
   const totalCost = Object.values(bk).reduce((a,b)=>a+b, 0)
   const divisor   = rates.div_usd || 280
-  const pricing = calculateSellingPrice(totalCost, salesMarginPct, divisor)
+  const pricing = calculateSellingPrice(totalCost, salesMarginPct, divisor, shipping.selectedRatePKR)
   const profit = pricing.marginAmountPKR
   const finalPKR = pricing.sellingPricePKR
   const finalUSD = pricing.sellingPriceUSD
